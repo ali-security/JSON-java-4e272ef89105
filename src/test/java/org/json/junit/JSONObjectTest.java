@@ -206,13 +206,17 @@ public class JSONObjectTest {
      */
     @Test
     public void unquotedText() {
-        String str = "{key1:value1, key2:42}";
+        String str = "{key1:value1, key2:42, 1.2 : 3.4, -7e5 : something!}";
         JSONObject jsonObject = new JSONObject(str);
         String textStr = jsonObject.toString();
         assertTrue("expected key1", textStr.contains("\"key1\""));
         assertTrue("expected value1", textStr.contains("\"value1\""));
         assertTrue("expected key2", textStr.contains("\"key2\""));
         assertTrue("expected 42", textStr.contains("42"));
+        assertTrue("expected 1.2", textStr.contains("\"1.2\""));
+        assertTrue("expected 3.4", textStr.contains("3.4"));
+        assertTrue("expected -7E+5", textStr.contains("\"-7E+5\""));
+        assertTrue("expected something!", textStr.contains("\"something!\""));
         Util.checkJSONObjectMaps(jsonObject);
     }
     
@@ -2199,6 +2203,51 @@ public class JSONObjectTest {
                     e.getMessage());
         }
         try {
+            // key is a nested map
+            String str = "{{\"foo\": \"bar\"}: \"baz\"}";
+            assertNull("Expected an exception",new JSONObject(str));
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                "Missing value at 1 [character 2 line 1]",
+                e.getMessage());
+        }
+        try {
+            // key is a nested array containing a map
+            String str = "{\"a\": 1, [{\"foo\": \"bar\"}]: \"baz\"}";
+            assertNull("Expected an exception",new JSONObject(str));
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                "Missing value at 9 [character 10 line 1]",
+                e.getMessage());
+        }
+        try {
+            // key contains }
+            String str = "{foo}: 2}";
+            assertNull("Expected an exception",new JSONObject(str));
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                "Expected a ':' after a key at 5 [character 6 line 1]",
+                e.getMessage());
+        }
+        try {
+            // key contains ]
+            String str = "{foo]: 2}";
+            assertNull("Expected an exception",new JSONObject(str));
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                "Expected a ':' after a key at 5 [character 6 line 1]",
+                e.getMessage());
+        }
+        try {
+            // \0 after ,
+            String str = "{\"myKey\":true, \0\"myOtherKey\":false}";
+            assertNull("Expected an exception",new JSONObject(str));
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                    "A JSONObject text must end with '}' at 15 [character 16 line 1]",
+                    e.getMessage());
+        }
+        try {
             // append to wrong key
             String str = "{\"myKey\":true, \"myOtherKey\":false}";
             JSONObject jsonObject = new JSONObject(str);
@@ -3508,5 +3557,90 @@ public class JSONObjectTest {
                 })
                 .put("b", 2);
         assertFalse(jo1.similar(jo3));
+    }
+
+    /**
+    * Tests that a '\0' after a pair separator can not be used to sneak a nested
+    * JSONObject in as a key. Every nesting level doubles the backslashes of the
+    * stringified key, so a few hundred characters would exhaust the heap.
+    * See https://github.com/stleary/JSON-java/issues/758 (CVE-2023-5072)
+    */
+    @Test(timeout = 30000)
+    public void issue758NestedObjectKeyAfterNulMemoryExhaustion() {
+        String input = makeNestedObjectKey(30);
+        assertEquals("input length", 367, input.length());
+        try {
+            JSONObject json_input = new JSONObject(input);
+            assertNull("Expected an exception", json_input);
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                    "A JSONObject text must end with '}' at 8 [character 9 line 1]",
+                    e.getMessage());
+        }
+    }
+
+    /**
+    * Tests that a JSONArray (containing a JSONObject) can not be used as a key.
+    * Every nesting level doubles the backslashes of the stringified key, so a
+    * few hundred characters would exhaust the heap.
+    * See https://github.com/stleary/JSON-java/issues/771 (CVE-2023-5072)
+    */
+    @Test(timeout = 30000)
+    public void issue771NestedArrayKeyMemoryExhaustion() {
+        String input = makeNestedArrayKey(30);
+        try {
+            JSONObject json_input = new JSONObject(input);
+            assertNull("Expected an exception", json_input);
+        } catch (JSONException e) {
+            assertEquals("Expecting an exception message",
+                    "Missing value at 7 [character 8 line 1]",
+                    e.getMessage());
+        }
+    }
+
+    /**
+    * Tests that JSONObject and JSONArray keys are rejected at any position.
+    * See https://github.com/stleary/JSON-java/issues/771 (CVE-2023-5072)
+    */
+    @Test
+    public void issue771NestedKeysRejected() {
+        String[] inputs = {
+                "{\"a\":1;\t\0{\"b\":2}:3}",
+                "{\"a\":1,\0{\"b\":2}:3}",
+                "{\"a\":1,[{\"b\":2}]:3}",
+                "{\"a\":1;[\"b\"]:3}",
+                "{a:1,[{b:2}]:3}",
+                "{[\"b\"]:3}",
+                "{{\"b\":2}:3}"
+        };
+        for (String input : inputs) {
+            try {
+                JSONObject json_input = new JSONObject(input);
+                fail("Expected an exception for " + input + " but got " + json_input);
+            } catch (JSONException e) {
+                // expected
+            }
+        }
+    }
+
+    /**
+     * Builds the nested object-as-key input from the CVE-2023-5072 advisory.
+     */
+    private static String makeNestedObjectKey(int depth) {
+        if (depth == 0) {
+            return "{\"a\":1}";
+        }
+        return "{\"a\":1;\t\0" + makeNestedObjectKey(depth - 1) + ":1}";
+    }
+
+    /**
+     * Builds a nested array-as-key input, the variant of CVE-2023-5072
+     * that does not need a '\0' to bypass the nesting check.
+     */
+    private static String makeNestedArrayKey(int depth) {
+        if (depth == 0) {
+            return "{\"a\":1}";
+        }
+        return "{\"a\":1,[" + makeNestedArrayKey(depth - 1) + "]:1}";
     }
 }
